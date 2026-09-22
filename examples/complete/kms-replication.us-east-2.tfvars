@@ -1,4 +1,3 @@
-# DEVEX-16277: exercises replication IAM policy KMS statements (gaps #1/#2).
 # Do not set "enabled", will be set by test framework
 # enabled                      = true
 

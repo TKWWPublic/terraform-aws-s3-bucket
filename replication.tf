@@ -68,8 +68,6 @@ data "aws_iam_policy_document" "replication" {
     ))
   }
 
-  # Without this, the auto-created replication role can't decrypt SSE-KMS source objects,
-  # so replication silently fails with AccessDenied (this is what happened in DEVEX-16059).
   dynamic "statement" {
     for_each = var.sse_algorithm == "aws:kms" && length(var.kms_master_key_arn) > 0 ? [1] : []
 

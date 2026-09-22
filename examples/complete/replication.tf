@@ -26,7 +26,6 @@ locals {
         metrics = {
           status = "Enabled"
         }
-        # exercises the DEVEX-16277 fix: grants kms:Encrypt/GenerateDataKey on this key
         replica_kms_key_id = var.sse_algorithm == "aws:kms" ? var.kms_master_key_arn : ""
       }
     }
