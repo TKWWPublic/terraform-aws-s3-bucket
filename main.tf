@@ -8,6 +8,18 @@ locals {
   versioning_enabled            = local.enabled && var.versioning_enabled
   transfer_acceleration_enabled = local.enabled && var.transfer_acceleration_enabled
 
+  # Destination KMS keys used by any replication rule, so the replication role can be granted
+  # encrypt/generate-data-key on exactly those keys (and none of them when no rule uses SSE-KMS).
+  replica_kms_key_ids = local.replication_enabled ? toset(compact([
+    for rule in(local.s3_replication_rules == null ? [] : local.s3_replication_rules) : try(
+      coalesce(
+        try(rule.destination.encryption_configuration.replica_kms_key_id, null),
+        try(rule.destination.replica_kms_key_id, null)
+      ),
+      ""
+    )
+  ])) : []
+
   # Remember, everything has to work with enabled == false,
   # so we cannot use coalesce() because it errors if all its arguments are empty,
   # and we cannot use one() because it returns null, which does not work in templates and lists.
@@ -326,6 +338,15 @@ resource "aws_s3_bucket_replication_configuration" "default" {
     # versioning must be set before replication
     aws_s3_bucket_versioning.default
   ]
+
+  lifecycle {
+    precondition {
+      # Replication requires versioning; without this check, AWS rejects the
+      # configuration with an opaque "InvalidRequest" error at apply time.
+      condition     = local.versioning_enabled
+      error_message = "`versioning_enabled` must be `true` when `s3_replication_enabled` is `true`."
+    }
+  }
 }
 
 resource "aws_s3_bucket_object_lock_configuration" "default" {

@@ -64,7 +64,32 @@ data "aws_iam_policy_document" "replication" {
     resources = toset(concat(
       try(length(var.s3_replica_bucket_arn), 0) > 0 ? ["${var.s3_replica_bucket_arn}/*"] : [],
       [for rule in local.s3_replication_rules : "${rule.destination_bucket}/*" if try(length(rule.destination_bucket), 0) > 0],
+      [for rule in local.s3_replication_rules : "${rule.destination.bucket}/*" if try(length(rule.destination.bucket), 0) > 0],
     ))
+  }
+
+  # Without this, the auto-created replication role can't decrypt SSE-KMS source objects,
+  # so replication silently fails with AccessDenied (this is what happened in DEVEX-16059).
+  dynamic "statement" {
+    for_each = var.sse_algorithm == "aws:kms" && length(var.kms_master_key_arn) > 0 ? [1] : []
+
+    content {
+      sid       = "AllowPrimaryToDecryptSourceObjects"
+      effect    = "Allow"
+      actions   = ["kms:Decrypt"]
+      resources = [var.kms_master_key_arn]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = length(local.replica_kms_key_ids) > 0 ? [1] : []
+
+    content {
+      sid       = "AllowPrimaryToEncryptReplicas"
+      effect    = "Allow"
+      actions   = ["kms:Encrypt", "kms:GenerateDataKey"]
+      resources = local.replica_kms_key_ids
+    }
   }
 }
 
