@@ -21,21 +21,6 @@ func cleanup(t *testing.T, terraformOptions *terraform.Options, tempTestFolder s
 	_ = os.RemoveAll(tempTestFolder)
 }
 
-type terraformState struct {
-	Resources []terraformStateResource `json:"resources"`
-}
-
-type terraformStateResource struct {
-	Module    string                           `json:"module"`
-	Type      string                           `json:"type"`
-	Name      string                           `json:"name"`
-	Instances []terraformStateResourceInstance `json:"instances"`
-}
-
-type terraformStateResourceInstance struct {
-	Attributes json.RawMessage `json:"attributes"`
-}
-
 type replicationRuleState struct {
 	ID          string `json:"id"`
 	Destination []struct {
@@ -54,54 +39,33 @@ type iamPolicyStatement struct {
 	Resource interface{} `json:"Resource"`
 }
 
-func loadTerraformState(t *testing.T, tempTestFolder string) terraformState {
+func mustFindPlannedResourceAttributes(t *testing.T, plan *terraform.PlanStruct, address string) map[string]interface{} {
 	t.Helper()
 
-	statePath := filepath.Join(tempTestFolder, "terraform.tfstate")
-	stateBytes, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatalf("Unexpected error reading Terraform state %q: %v.", statePath, err)
+	resource, found := plan.ResourcePlannedValuesMap[address]
+	if !found {
+		t.Fatalf("Expected Terraform plan to include resource %q.", address)
 	}
 
-	var state terraformState
-	if err := json.Unmarshal(stateBytes, &state); err != nil {
-		t.Fatalf("Unexpected error unmarshalling Terraform state %q: %v.", statePath, err)
-	}
-
-	return state
+	return resource.AttributeValues
 }
 
-func mustFindTerraformResourceAttributes(t *testing.T, state terraformState, moduleAddress string, resourceType string, resourceName string) json.RawMessage {
+func mustDecodePlannedAttribute(t *testing.T, attributes map[string]interface{}, attributeName string, target interface{}) {
 	t.Helper()
-
-	for _, resource := range state.Resources {
-		if resource.Module == moduleAddress && resource.Type == resourceType && resource.Name == resourceName {
-			if len(resource.Instances) == 0 {
-				t.Fatalf("Expected Terraform state resource %q.%q.%q to include an instance.", moduleAddress, resourceType, resourceName)
-			}
-
-			return resource.Instances[0].Attributes
-		}
-	}
-
-	t.Fatalf("Expected Terraform state to include resource %q.%q.%q.", moduleAddress, resourceType, resourceName)
-	return nil
-}
-
-func mustFindTerraformAttribute(t *testing.T, resourceAttributes json.RawMessage, attributeName string) json.RawMessage {
-	t.Helper()
-
-	var attributes map[string]json.RawMessage
-	if err := json.Unmarshal(resourceAttributes, &attributes); err != nil {
-		t.Fatalf("Unexpected error unmarshalling Terraform resource attributes: %v.", err)
-	}
 
 	attributeValue, found := attributes[attributeName]
 	if !found {
-		t.Fatalf("Expected Terraform resource attributes to include %q.", attributeName)
+		t.Fatalf("Expected planned resource attributes to include %q.", attributeName)
 	}
 
-	return attributeValue
+	attributeBytes, err := json.Marshal(attributeValue)
+	if err != nil {
+		t.Fatalf("Unexpected error marshalling planned attribute %q: %v.", attributeName, err)
+	}
+
+	if err := json.Unmarshal(attributeBytes, target); err != nil {
+		t.Fatalf("Unexpected error unmarshalling planned attribute %q: %v.", attributeName, err)
+	}
 }
 
 func policyStatementResources(t *testing.T, statement iamPolicyStatement) []string {
@@ -517,41 +481,27 @@ func TestExamplesCompleteWithKMSReplication(t *testing.T) {
 	kmsMasterKeyArn := "arn:aws:kms:us-east-2:123456789012:key/00000000-0000-0000-0000-000000000000"
 
 	tempTestFolder := testStructure.CopyTerraformFolderToTemp(t, rootFolder, terraformFolderRelativeToRoot)
+	defer os.RemoveAll(tempTestFolder)
 
 	terraformOptions := &terraform.Options{
 		TerraformDir: tempTestFolder,
 		Upgrade:      true,
 		VarFiles:     varFiles,
+		PlanFilePath: filepath.Join(tempTestFolder, "kms-replication.tfplan"),
 		Vars: map[string]interface{}{
 			"attributes": attributes,
 			"enabled":    "true",
 		},
 	}
 
-	defer cleanup(t, terraformOptions, tempTestFolder)
+	// The fixture points at a KMS key that does not exist, so this test stays plan-only:
+	// AWS would reject the SSE-KMS configuration on apply before any assertion could run.
+	plan := terraform.InitAndPlanAndShowWithStruct(t, terraformOptions)
 
-	terraform.InitAndApply(t, terraformOptions)
-
-	s3BucketId := terraform.Output(t, terraformOptions, "bucket_id")
-	expectedS3BucketId := "eg-test-s3-replication-kms-test-" + attributes[0]
-	assert.Equal(t, expectedS3BucketId, s3BucketId)
-
-	s3ReplicationBucketId := terraform.Output(t, terraformOptions, "replication_bucket_id")
-	expectedReplicationS3BucketId := "eg-test-s3-replication-kms-test-" + attributes[0] + "-target"
-	assert.Equal(t, expectedReplicationS3BucketId, s3ReplicationBucketId)
-
-	state := loadTerraformState(t, tempTestFolder)
-
-	resourceAttributes := mustFindTerraformResourceAttributes(t, state, "module.s3_bucket", "aws_s3_bucket_replication_configuration", "default")
+	replicationAttributes := mustFindPlannedResourceAttributes(t, plan, "module.s3_bucket.aws_s3_bucket_replication_configuration.default[0]")
 
 	var replicationRules []replicationRuleState
-	err := json.Unmarshal(
-		mustFindTerraformAttribute(t, resourceAttributes, "rule"),
-		&replicationRules,
-	)
-	if err != nil {
-		t.Fatalf("Unexpected error unmarshalling replication rules from Terraform state: %v.", err)
-	}
+	mustDecodePlannedAttribute(t, replicationAttributes, "rule", &replicationRules)
 
 	assert.Len(t, replicationRules, 2)
 	replicationRulesByID := make(map[string]replicationRuleState, len(replicationRules))
@@ -569,15 +519,14 @@ func TestExamplesCompleteWithKMSReplication(t *testing.T) {
 		assert.Equal(t, kmsMasterKeyArn, rule.Destination[0].EncryptionConfiguration[0].ReplicaKmsKeyID)
 	}
 
-	policyAttributes := mustFindTerraformResourceAttributes(t, state, "module.s3_bucket", "aws_iam_policy", "replication")
+	policyAttributes := mustFindPlannedResourceAttributes(t, plan, "module.s3_bucket.aws_iam_policy.replication[0]")
+
+	policyJSON, ok := policyAttributes["policy"].(string)
+	require.Truef(t, ok, "Expected the planned replication IAM policy to be a known string, got %T.", policyAttributes["policy"])
 
 	var replicationPolicy iamPolicyDocument
-	err = json.Unmarshal(
-		mustFindTerraformAttribute(t, policyAttributes, "policy"),
-		&replicationPolicy,
-	)
-	if err != nil {
-		t.Fatalf("Unexpected error unmarshalling replication IAM policy state: %v.", err)
+	if err := json.Unmarshal([]byte(policyJSON), &replicationPolicy); err != nil {
+		t.Fatalf("Unexpected error unmarshalling replication IAM policy: %v.", err)
 	}
 
 	sourceDecryptStatement, found := findPolicyStatementBySID(replicationPolicy, "AllowPrimaryToDecryptSourceObjects")
