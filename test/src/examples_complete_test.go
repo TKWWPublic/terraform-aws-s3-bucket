@@ -3,6 +3,7 @@ package test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"github.com/gruntwork-io/terratest/modules/aws"
 	"github.com/gruntwork-io/terratest/modules/random"
 	"github.com/gruntwork-io/terratest/modules/terraform"
@@ -48,7 +49,7 @@ func (s *stringOrSlice) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	return nil
+	return fmt.Errorf("expected string or []string, got %s", string(data))
 }
 
 type iamPolicyDocumentState struct {
