@@ -69,13 +69,13 @@ data "aws_iam_policy_document" "replication" {
   }
 
   dynamic "statement" {
-    for_each = var.sse_algorithm == "aws:kms" ? [[var.kms_master_key_arn]] : []
+    for_each = var.sse_algorithm == "aws:kms" ? toset(compact([var.kms_master_key_arn])) : toset([])
 
     content {
       sid       = "AllowPrimaryToDecryptSourceObjects"
       effect    = "Allow"
       actions   = ["kms:Decrypt", "kms:DescribeKey"]
-      resources = compact(statement.value)
+      resources = [statement.value]
     }
   }
 

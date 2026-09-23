@@ -550,7 +550,16 @@ func TestExamplesCompleteWithKMSReplication(t *testing.T) {
 	}
 
 	assert.Len(t, replicationRules, 2)
+	replicationRulesByID := make(map[string]replicationRuleState, len(replicationRules))
 	for _, rule := range replicationRules {
+		replicationRulesByID[rule.ID] = rule
+	}
+
+	require.Contains(t, replicationRulesByID, "replication-test-explicit-bucket")
+	require.Contains(t, replicationRulesByID, "replication-test-metrics")
+
+	for _, ruleID := range []string{"replication-test-explicit-bucket", "replication-test-metrics"} {
+		rule := replicationRulesByID[ruleID]
 		require.Len(t, rule.Destination, 1)
 		require.Len(t, rule.Destination[0].EncryptionConfiguration, 1)
 		assert.Equal(t, kmsMasterKeyArn, rule.Destination[0].EncryptionConfiguration[0].ReplicaKmsKeyID)
