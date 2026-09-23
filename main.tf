@@ -352,7 +352,7 @@ resource "aws_s3_bucket_replication_configuration" "default" {
     precondition {
       # Replication requires versioning; without this check, AWS rejects the
       # configuration with an opaque "InvalidRequest" error at apply time.
-      condition     = local.versioning_enabled
+      condition     = !local.replication_enabled || local.versioning_enabled
       error_message = "`versioning_enabled` must be `true` when `s3_replication_enabled` is `true`."
     }
   }
