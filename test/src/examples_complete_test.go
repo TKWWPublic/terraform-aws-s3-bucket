@@ -24,6 +24,7 @@ func cleanup(t *testing.T, terraformOptions *terraform.Options, tempTestFolder s
 type replicationRuleState struct {
 	ID                      string                                   `json:"id"`
 	SourceSelectionCriteria *replicationSourceSelectionCriteriaState `json:"source_selection_criteria,omitempty"`
+	Destination             replicationDestinationState              `json:"destination"`
 }
 
 type replicationSourceSelectionCriteriaState struct {
@@ -32,6 +33,26 @@ type replicationSourceSelectionCriteriaState struct {
 
 type replicationStatusState struct {
 	Status string `json:"status"`
+}
+
+type replicationDestinationState struct {
+	EncryptionConfiguration *replicationEncryptionConfigurationState `json:"encryption_configuration,omitempty"`
+}
+
+type replicationEncryptionConfigurationState struct {
+	ReplicaKMSKeyID string `json:"replica_kms_key_id"`
+}
+
+type serverSideEncryptionConfigurationState struct {
+	Rule []serverSideEncryptionRuleState `json:"rule"`
+}
+
+type serverSideEncryptionRuleState struct {
+	ApplyServerSideEncryptionByDefault serverSideEncryptionByDefaultState `json:"apply_server_side_encryption_by_default"`
+}
+
+type serverSideEncryptionByDefaultState struct {
+	KMSMasterKeyID string `json:"kms_master_key_id"`
 }
 
 type stringOrSlice []string
@@ -515,12 +536,9 @@ func TestExamplesCompleteWithKMSReplication(t *testing.T) {
 
 	decryptSourceObjectsStatement := mustFindPolicyStatement(t, replicationPolicy, "AllowPrimaryToDecryptSourceObjects")
 	assert.ElementsMatch(t, []string{"kms:Decrypt", "kms:DescribeKey"}, []string(decryptSourceObjectsStatement.Action))
-	assert.Len(t, decryptSourceObjectsStatement.Resource, 1)
-	assert.NotEmpty(t, decryptSourceObjectsStatement.Resource[0])
 
 	encryptReplicasStatement := mustFindPolicyStatement(t, replicationPolicy, "AllowPrimaryToEncryptReplicas")
 	assert.ElementsMatch(t, []string{"kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"}, []string(encryptReplicasStatement.Action))
-	assert.Equal(t, []string(decryptSourceObjectsStatement.Resource), []string(encryptReplicasStatement.Resource))
 
 	replicationAttributes := mustFindPlannedResourceAttributes(t, plan, "module.s3_bucket.aws_s3_bucket_replication_configuration.default[0]")
 
@@ -536,12 +554,37 @@ func TestExamplesCompleteWithKMSReplication(t *testing.T) {
 	assert.Contains(t, replicationRuleIDs, "replication-test-explicit-bucket")
 	assert.Contains(t, replicationRuleIDs, "replication-test-metrics")
 
+	expectedReplicaKMSResources := make([]string, 0, len(replicationRules))
+	seenReplicaKMSResources := map[string]struct{}{}
+
 	for _, rule := range replicationRules {
 		if assert.NotNil(t, rule.SourceSelectionCriteria) {
 			if assert.NotNil(t, rule.SourceSelectionCriteria.SSEKMSEncryptedObjects) {
 				assert.Equal(t, "Enabled", rule.SourceSelectionCriteria.SSEKMSEncryptedObjects.Status)
 			}
 		}
+
+		if rule.Destination.EncryptionConfiguration != nil {
+			replicaKMSKeyID := rule.Destination.EncryptionConfiguration.ReplicaKMSKeyID
+			if _, seen := seenReplicaKMSResources[replicaKMSKeyID]; !seen {
+				seenReplicaKMSResources[replicaKMSKeyID] = struct{}{}
+				expectedReplicaKMSResources = append(expectedReplicaKMSResources, replicaKMSKeyID)
+			}
+		}
+	}
+
+	assert.ElementsMatch(t, expectedReplicaKMSResources, []string(encryptReplicasStatement.Resource))
+
+	sourceEncryptionAttributes := mustFindPlannedResourceAttributes(t, plan, "module.s3_bucket.aws_s3_bucket_server_side_encryption_configuration.default[0]")
+
+	var sourceEncryptionConfiguration serverSideEncryptionConfigurationState
+	mustDecodePlannedAttribute(t, sourceEncryptionAttributes, "rule", &sourceEncryptionConfiguration.Rule)
+	if assert.Len(t, sourceEncryptionConfiguration.Rule, 1) {
+		assert.Equal(
+			t,
+			[]string{sourceEncryptionConfiguration.Rule[0].ApplyServerSideEncryptionByDefault.KMSMasterKeyID},
+			[]string(decryptSourceObjectsStatement.Resource),
+		)
 	}
 }
 
