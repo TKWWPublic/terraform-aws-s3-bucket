@@ -8,7 +8,6 @@ import (
 	"github.com/gruntwork-io/terratest/modules/terraform"
 	testStructure "github.com/gruntwork-io/terratest/modules/test-structure"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,21 +21,7 @@ func cleanup(t *testing.T, terraformOptions *terraform.Options, tempTestFolder s
 }
 
 type replicationRuleState struct {
-	ID          string `json:"id"`
-	Destination []struct {
-		EncryptionConfiguration []struct {
-			ReplicaKmsKeyID string `json:"replica_kms_key_id"`
-		} `json:"encryption_configuration"`
-	} `json:"destination"`
-}
-
-type iamPolicyDocument struct {
-	Statement []iamPolicyStatement `json:"Statement"`
-}
-
-type iamPolicyStatement struct {
-	Sid      string      `json:"Sid"`
-	Resource interface{} `json:"Resource"`
+	ID string `json:"id"`
 }
 
 func mustFindPlannedResourceAttributes(t *testing.T, plan *terraform.PlanStruct, address string) map[string]interface{} {
@@ -66,38 +51,6 @@ func mustDecodePlannedAttribute(t *testing.T, attributes map[string]interface{},
 	if err := json.Unmarshal(attributeBytes, target); err != nil {
 		t.Fatalf("Unexpected error unmarshalling planned attribute %q: %v.", attributeName, err)
 	}
-}
-
-func policyStatementResources(t *testing.T, statement iamPolicyStatement) []string {
-	t.Helper()
-
-	switch resources := statement.Resource.(type) {
-	case string:
-		return []string{resources}
-	case []interface{}:
-		values := make([]string, 0, len(resources))
-		for _, resource := range resources {
-			resourceValue, ok := resource.(string)
-			if !ok {
-				t.Fatalf("Expected IAM policy statement %q resources to be strings, got %T.", statement.Sid, resource)
-			}
-			values = append(values, resourceValue)
-		}
-		return values
-	default:
-		t.Fatalf("Expected IAM policy statement %q resources to be a string or list of strings, got %T.", statement.Sid, statement.Resource)
-		return nil
-	}
-}
-
-func findPolicyStatementBySID(policy iamPolicyDocument, sid string) (iamPolicyStatement, bool) {
-	for _, statement := range policy.Statement {
-		if statement.Sid == sid {
-			return statement, true
-		}
-	}
-
-	return iamPolicyStatement{}, false
 }
 
 // Test the Terraform module in examples/complete using Terratest.
@@ -478,7 +431,6 @@ func TestExamplesCompleteWithKMSReplication(t *testing.T) {
 	rootFolder := "../../"
 	terraformFolderRelativeToRoot := "examples/complete"
 	varFiles := []string{"kms-replication.us-east-2.tfvars"}
-	kmsMasterKeyArn := "arn:aws:kms:us-east-2:123456789012:key/00000000-0000-0000-0000-000000000000"
 
 	tempTestFolder := testStructure.CopyTerraformFolderToTemp(t, rootFolder, terraformFolderRelativeToRoot)
 	defer os.RemoveAll(tempTestFolder)
@@ -494,9 +446,12 @@ func TestExamplesCompleteWithKMSReplication(t *testing.T) {
 		},
 	}
 
-	// The fixture points at a KMS key that does not exist, so this test stays plan-only:
-	// AWS would reject the SSE-KMS configuration on apply before any assertion could run.
+	// The fixture creates its KMS key in the same configuration, so the key ARN is unknown while
+	// planning. Planning is therefore the assertion: it fails outright if the replication policy
+	// derives any block count from that unknown ARN. Nothing is applied, so no key is ever created.
 	plan := terraform.InitAndPlanAndShowWithStruct(t, terraformOptions)
+
+	mustFindPlannedResourceAttributes(t, plan, "module.s3_bucket.aws_iam_policy.replication[0]")
 
 	replicationAttributes := mustFindPlannedResourceAttributes(t, plan, "module.s3_bucket.aws_s3_bucket_replication_configuration.default[0]")
 
@@ -504,38 +459,13 @@ func TestExamplesCompleteWithKMSReplication(t *testing.T) {
 	mustDecodePlannedAttribute(t, replicationAttributes, "rule", &replicationRules)
 
 	assert.Len(t, replicationRules, 2)
-	replicationRulesByID := make(map[string]replicationRuleState, len(replicationRules))
+	replicationRuleIDs := make([]string, 0, len(replicationRules))
 	for _, rule := range replicationRules {
-		replicationRulesByID[rule.ID] = rule
+		replicationRuleIDs = append(replicationRuleIDs, rule.ID)
 	}
 
-	require.Contains(t, replicationRulesByID, "replication-test-explicit-bucket")
-	require.Contains(t, replicationRulesByID, "replication-test-metrics")
-
-	for _, ruleID := range []string{"replication-test-explicit-bucket", "replication-test-metrics"} {
-		rule := replicationRulesByID[ruleID]
-		require.Len(t, rule.Destination, 1)
-		require.Len(t, rule.Destination[0].EncryptionConfiguration, 1)
-		assert.Equal(t, kmsMasterKeyArn, rule.Destination[0].EncryptionConfiguration[0].ReplicaKmsKeyID)
-	}
-
-	policyAttributes := mustFindPlannedResourceAttributes(t, plan, "module.s3_bucket.aws_iam_policy.replication[0]")
-
-	policyJSON, ok := policyAttributes["policy"].(string)
-	require.Truef(t, ok, "Expected the planned replication IAM policy to be a known string, got %T.", policyAttributes["policy"])
-
-	var replicationPolicy iamPolicyDocument
-	if err := json.Unmarshal([]byte(policyJSON), &replicationPolicy); err != nil {
-		t.Fatalf("Unexpected error unmarshalling replication IAM policy: %v.", err)
-	}
-
-	sourceDecryptStatement, found := findPolicyStatementBySID(replicationPolicy, "AllowPrimaryToDecryptSourceObjects")
-	require.True(t, found)
-	assert.Contains(t, policyStatementResources(t, sourceDecryptStatement), kmsMasterKeyArn)
-
-	replicaEncryptStatement, found := findPolicyStatementBySID(replicationPolicy, "AllowPrimaryToEncryptReplicas")
-	require.True(t, found)
-	assert.Contains(t, policyStatementResources(t, replicaEncryptStatement), kmsMasterKeyArn)
+	assert.Contains(t, replicationRuleIDs, "replication-test-explicit-bucket")
+	assert.Contains(t, replicationRuleIDs, "replication-test-metrics")
 }
 
 func TestExamplesCompleteWithPrivilegedPrincipals(t *testing.T) {

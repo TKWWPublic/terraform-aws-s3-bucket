@@ -30,5 +30,5 @@ allowed_bucket_actions = [
 
 s3_replication_enabled = true
 
-sse_algorithm      = "aws:kms"
-kms_master_key_arn = "arn:aws:kms:us-east-2:123456789012:key/00000000-0000-0000-0000-000000000000"
+sse_algorithm  = "aws:kms"
+create_kms_key = true

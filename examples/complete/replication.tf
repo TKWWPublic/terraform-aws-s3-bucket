@@ -10,7 +10,7 @@ locals {
       destination = {
         account_id = local.account_id
         encryption_configuration = var.sse_algorithm == "aws:kms" ? {
-          replica_kms_key_id = var.kms_master_key_arn
+          replica_kms_key_id = local.kms_master_key_arn
         } : null
         metrics = {
           status = null
@@ -26,7 +26,7 @@ locals {
       destination = {
         account_id = local.account_id
         encryption_configuration = var.sse_algorithm == "aws:kms" ? {
-          replica_kms_key_id = var.kms_master_key_arn
+          replica_kms_key_id = local.kms_master_key_arn
         } : null
         metrics = {
           status = "Enabled"

@@ -129,6 +129,12 @@ variable "kms_master_key_arn" {
   description = "The AWS KMS master key ARN used for the `SSE-KMS` encryption. This can only be used when you set the value of `sse_algorithm` as `aws:kms`. The default aws/s3 AWS KMS master key is used if this element is absent while the `sse_algorithm` is `aws:kms`"
 }
 
+variable "create_kms_key" {
+  type        = bool
+  default     = false
+  description = "Create a KMS key in this configuration and use it instead of `kms_master_key_arn`"
+}
+
 variable "user_enabled" {
   type        = bool
   default     = false
