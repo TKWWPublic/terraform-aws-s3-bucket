@@ -74,7 +74,7 @@ data "aws_iam_policy_document" "replication" {
     content {
       sid       = "AllowPrimaryToDecryptSourceObjects"
       effect    = "Allow"
-      actions   = ["kms:Decrypt"]
+      actions   = ["kms:Decrypt", "kms:DescribeKey"]
       resources = [var.kms_master_key_arn]
     }
   }
@@ -85,7 +85,7 @@ data "aws_iam_policy_document" "replication" {
     content {
       sid       = "AllowPrimaryToEncryptReplicas"
       effect    = "Allow"
-      actions   = ["kms:Encrypt", "kms:GenerateDataKey"]
+      actions   = ["kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
       resources = local.replica_kms_key_ids
     }
   }
