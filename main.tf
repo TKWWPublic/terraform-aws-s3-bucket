@@ -357,7 +357,7 @@ resource "aws_s3_bucket_replication_configuration" "default" {
     }
 
     precondition {
-      condition     = var.sse_algorithm != "aws:kms" || var.kms_master_key_arn != ""
+      condition     = !local.replication_enabled || var.sse_algorithm != "aws:kms" || var.kms_master_key_arn != ""
       error_message = "`kms_master_key_arn` must be set to a customer managed key when replication uses `sse_algorithm = \"aws:kms\"`: S3 cannot replicate objects encrypted with the AWS managed `aws/s3` key."
     }
   }
