@@ -10,9 +10,11 @@ locals {
 
   # Destination KMS keys used by any replication rule, so the replication role can be granted
   # encrypt/generate-data-key on exactly those keys (and none of them when no rule uses SSE-KMS).
+  # replica_kms_key_id is `optional(string, "")`, so it always exists: it must be compared against
+  # "" rather than probed with can(), which would match every rule.
   replica_kms_key_rules = local.replication_enabled ? [
     for rule in (local.s3_replication_rules == null ? [] : local.s3_replication_rules) : rule
-    if try(rule.destination.encryption_configuration, null) != null || can(rule.destination.replica_kms_key_id)
+    if try(rule.destination.encryption_configuration, null) != null || try(rule.destination.replica_kms_key_id, "") != ""
   ] : []
 
   replica_kms_key_ids = [
