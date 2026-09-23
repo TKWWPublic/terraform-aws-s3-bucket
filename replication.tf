@@ -86,7 +86,7 @@ data "aws_iam_policy_document" "replication" {
       sid       = "AllowPrimaryToEncryptReplicas"
       effect    = "Allow"
       actions   = ["kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
-      resources = compact(statement.value)
+      resources = distinct(compact(statement.value))
     }
   }
 }

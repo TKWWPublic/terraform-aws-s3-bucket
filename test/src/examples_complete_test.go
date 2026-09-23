@@ -8,6 +8,7 @@ import (
 	"github.com/gruntwork-io/terratest/modules/terraform"
 	testStructure "github.com/gruntwork-io/terratest/modules/test-structure"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -550,8 +551,8 @@ func TestExamplesCompleteWithKMSReplication(t *testing.T) {
 
 	assert.Len(t, replicationRules, 2)
 	for _, rule := range replicationRules {
-		assert.Len(t, rule.Destination, 1)
-		assert.Len(t, rule.Destination[0].EncryptionConfiguration, 1)
+		require.Len(t, rule.Destination, 1)
+		require.Len(t, rule.Destination[0].EncryptionConfiguration, 1)
 		assert.Equal(t, kmsMasterKeyArn, rule.Destination[0].EncryptionConfiguration[0].ReplicaKmsKeyID)
 	}
 
@@ -567,11 +568,11 @@ func TestExamplesCompleteWithKMSReplication(t *testing.T) {
 	}
 
 	sourceDecryptStatement, found := findPolicyStatementBySID(replicationPolicy, "AllowPrimaryToDecryptSourceObjects")
-	assert.True(t, found)
+	require.True(t, found)
 	assert.Contains(t, policyStatementResources(sourceDecryptStatement), kmsMasterKeyArn)
 
 	replicaEncryptStatement, found := findPolicyStatementBySID(replicationPolicy, "AllowPrimaryToEncryptReplicas")
-	assert.True(t, found)
+	require.True(t, found)
 	assert.Contains(t, policyStatementResources(replicaEncryptStatement), kmsMasterKeyArn)
 }
 
