@@ -31,13 +31,6 @@ resource "aws_iam_policy" "replication" {
   name   = aws_iam_role.replication[0].name
   policy = data.aws_iam_policy_document.replication[0].json
 
-  lifecycle {
-    precondition {
-      condition     = !local.replication_enabled || var.sse_algorithm != "aws:kms" || var.kms_master_key_arn != ""
-      error_message = "`kms_master_key_arn` must be set to a customer managed key when replication uses `sse_algorithm = \"aws:kms\"`: S3 cannot replicate objects encrypted with the AWS managed `aws/s3` key."
-    }
-  }
-
   tags = module.this.tags
 }
 
