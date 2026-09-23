@@ -76,7 +76,7 @@ data "aws_iam_policy_document" "replication" {
   }
 
   dynamic "statement" {
-    for_each = var.sse_algorithm == "aws:kms" ? [var.kms_master_key_arn] : []
+    for_each = length(local.source_kms_replication_rules) > 0 ? [var.kms_master_key_arn] : []
 
     content {
       sid       = "AllowPrimaryToDecryptSourceObjects"

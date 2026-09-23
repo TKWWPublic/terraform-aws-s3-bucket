@@ -22,6 +22,11 @@ locals {
     for rule in local.replica_kms_key_rules : rule.destination.encryption_configuration.replica_kms_key_id
   ]
 
+  source_kms_replication_rules = local.replication_enabled ? [
+    for rule in(local.s3_replication_rules == null ? [] : local.s3_replication_rules) : rule
+    if try(rule.source_selection_criteria.sse_kms_encrypted_objects.status, "Disabled") == "Enabled"
+  ] : []
+
   # Remember, everything has to work with enabled == false,
   # so we cannot use coalesce() because it errors if all its arguments are empty,
   # and we cannot use one() because it returns null, which does not work in templates and lists.
