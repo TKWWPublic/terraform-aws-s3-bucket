@@ -104,7 +104,9 @@ func mustFindTerraformAttribute(t *testing.T, resourceAttributes json.RawMessage
 	return attributeValue
 }
 
-func policyStatementResources(statement iamPolicyStatement) []string {
+func policyStatementResources(t *testing.T, statement iamPolicyStatement) []string {
+	t.Helper()
+
 	switch resources := statement.Resource.(type) {
 	case string:
 		return []string{resources}
@@ -112,12 +114,14 @@ func policyStatementResources(statement iamPolicyStatement) []string {
 		values := make([]string, 0, len(resources))
 		for _, resource := range resources {
 			resourceValue, ok := resource.(string)
-			if ok {
-				values = append(values, resourceValue)
+			if !ok {
+				t.Fatalf("Expected IAM policy statement %q resources to be strings, got %T.", statement.Sid, resource)
 			}
+			values = append(values, resourceValue)
 		}
 		return values
 	default:
+		t.Fatalf("Expected IAM policy statement %q resources to be a string or list of strings, got %T.", statement.Sid, statement.Resource)
 		return nil
 	}
 }
@@ -578,11 +582,11 @@ func TestExamplesCompleteWithKMSReplication(t *testing.T) {
 
 	sourceDecryptStatement, found := findPolicyStatementBySID(replicationPolicy, "AllowPrimaryToDecryptSourceObjects")
 	require.True(t, found)
-	assert.Contains(t, policyStatementResources(sourceDecryptStatement), kmsMasterKeyArn)
+	assert.Contains(t, policyStatementResources(t, sourceDecryptStatement), kmsMasterKeyArn)
 
 	replicaEncryptStatement, found := findPolicyStatementBySID(replicationPolicy, "AllowPrimaryToEncryptReplicas")
 	require.True(t, found)
-	assert.Contains(t, policyStatementResources(replicaEncryptStatement), kmsMasterKeyArn)
+	assert.Contains(t, policyStatementResources(t, replicaEncryptStatement), kmsMasterKeyArn)
 }
 
 func TestExamplesCompleteWithPrivilegedPrincipals(t *testing.T) {

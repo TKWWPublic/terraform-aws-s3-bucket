@@ -34,7 +34,7 @@ resource "aws_iam_policy" "replication" {
   lifecycle {
     precondition {
       condition     = var.sse_algorithm != "aws:kms" || var.kms_master_key_arn != ""
-      error_message = "`kms_master_key_arn` must be set when `s3_replication_enabled` is `true` and `sse_algorithm` is `aws:kms`."
+      error_message = "`kms_master_key_arn` must be set when replication uses `sse_algorithm = \"aws:kms\"`."
     }
   }
 
@@ -93,7 +93,7 @@ data "aws_iam_policy_document" "replication" {
       sid       = "AllowPrimaryToEncryptReplicas"
       effect    = "Allow"
       actions   = ["kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
-      resources = local.replica_kms_key_ids
+      resources = tolist(toset(local.replica_kms_key_ids))
     }
   }
 }
