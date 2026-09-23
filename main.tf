@@ -10,13 +10,17 @@ locals {
 
   # Destination KMS keys used by any replication rule, so the replication role can be granted
   # encrypt/generate-data-key on exactly those keys (and none of them when no rule uses SSE-KMS).
-  replica_kms_key_ids = local.replication_enabled ? flatten([
-    for rule in(local.s3_replication_rules == null ? [] : local.s3_replication_rules) : try(
-      [rule.destination.encryption_configuration.replica_kms_key_id],
-      [rule.destination.replica_kms_key_id],
-      []
+  replica_kms_key_rules = local.replication_enabled ? [
+    for rule in(local.s3_replication_rules == null ? [] : local.s3_replication_rules) : rule
+    if try(rule.destination.encryption_configuration, null) != null || can(rule.destination.replica_kms_key_id)
+  ] : []
+
+  replica_kms_key_ids = [
+    for rule in local.replica_kms_key_rules : try(
+      rule.destination.encryption_configuration.replica_kms_key_id,
+      rule.destination.replica_kms_key_id
     )
-  ]) : []
+  ]
 
   # Remember, everything has to work with enabled == false,
   # so we cannot use coalesce() because it errors if all its arguments are empty,

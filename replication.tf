@@ -80,13 +80,13 @@ data "aws_iam_policy_document" "replication" {
   }
 
   dynamic "statement" {
-    for_each = length(local.replica_kms_key_ids) > 0 ? [local.replica_kms_key_ids] : []
+    for_each = length(local.replica_kms_key_rules) > 0 ? [1] : []
 
     content {
       sid       = "AllowPrimaryToEncryptReplicas"
       effect    = "Allow"
       actions   = ["kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
-      resources = distinct(compact(statement.value))
+      resources = distinct(compact(local.replica_kms_key_ids))
     }
   }
 }
