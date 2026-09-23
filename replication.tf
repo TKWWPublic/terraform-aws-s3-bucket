@@ -31,6 +31,13 @@ resource "aws_iam_policy" "replication" {
   name   = aws_iam_role.replication[0].name
   policy = data.aws_iam_policy_document.replication[0].json
 
+  lifecycle {
+    precondition {
+      condition     = var.sse_algorithm != "aws:kms" || var.kms_master_key_arn != ""
+      error_message = "`kms_master_key_arn` must be set when `s3_replication_enabled` is `true` and `sse_algorithm` is `aws:kms`."
+    }
+  }
+
   tags = module.this.tags
 }
 
@@ -69,7 +76,7 @@ data "aws_iam_policy_document" "replication" {
   }
 
   dynamic "statement" {
-    for_each = var.sse_algorithm == "aws:kms" ? toset(compact([var.kms_master_key_arn])) : toset([])
+    for_each = var.sse_algorithm == "aws:kms" ? [var.kms_master_key_arn] : []
 
     content {
       sid       = "AllowPrimaryToDecryptSourceObjects"
@@ -86,7 +93,7 @@ data "aws_iam_policy_document" "replication" {
       sid       = "AllowPrimaryToEncryptReplicas"
       effect    = "Allow"
       actions   = ["kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
-      resources = distinct(compact(local.replica_kms_key_ids))
+      resources = local.replica_kms_key_ids
     }
   }
 }
