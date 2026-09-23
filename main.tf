@@ -3,7 +3,7 @@ locals {
   partition             = join("", data.aws_partition.current[*].partition)
   directory_bucket_name = var.create_s3_directory_bucket ? "${local.bucket_name}-${var.availability_zone_id}" : ""
 
-  object_lock_enabled           = local.enabled && var.object_lock_configuration != null
+  object_lock_enabled           = local.enabled && (var.object_lock_enabled || var.object_lock_configuration != null)
   replication_enabled           = local.enabled && var.s3_replication_enabled
   versioning_enabled            = local.enabled && var.versioning_enabled
   transfer_acceleration_enabled = local.enabled && var.transfer_acceleration_enabled
@@ -32,9 +32,10 @@ data "aws_partition" "current" { count = local.enabled ? 1 : 0 }
 data "aws_canonical_user_id" "default" { count = local.enabled ? 1 : 0 }
 
 resource "aws_s3_bucket" "default" {
-  count         = local.enabled ? 1 : 0
-  bucket        = local.bucket_name
-  force_destroy = var.force_destroy
+  count            = local.enabled ? 1 : 0
+  bucket           = local.bucket_name
+  bucket_namespace = var.bucket_namespace
+  force_destroy    = var.force_destroy
 
   object_lock_enabled = local.object_lock_enabled
 
@@ -84,7 +85,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "default" {
   expected_bucket_owner = var.expected_bucket_owner
 
   rule {
-    bucket_key_enabled = var.bucket_key_enabled
+    bucket_key_enabled       = var.bucket_key_enabled
+    blocked_encryption_types = var.blocked_encryption_types
 
     apply_server_side_encryption_by_default {
       sse_algorithm     = var.sse_algorithm
@@ -335,11 +337,14 @@ resource "aws_s3_bucket_object_lock_configuration" "default" {
 
   object_lock_enabled = "Enabled"
 
-  rule {
-    default_retention {
-      mode  = var.object_lock_configuration.mode
-      days  = var.object_lock_configuration.days
-      years = var.object_lock_configuration.years
+  dynamic "rule" {
+    for_each = var.object_lock_configuration != null ? [var.object_lock_configuration] : []
+    content {
+      default_retention {
+        mode  = rule.value.mode
+        days  = rule.value.days
+        years = rule.value.years
+      }
     }
   }
 }
@@ -580,10 +585,13 @@ resource "time_sleep" "wait_for_aws_s3_bucket_settings" {
   create_duration  = "30s"
   destroy_duration = "30s"
 }
-// S3 event Bucket Notifications 
+
+# S3 event Bucket Notifications 
 resource "aws_s3_bucket_notification" "bucket_notification" {
   count  = var.event_notification_details.enabled ? 1 : 0
   bucket = local.bucket_id
+
+  eventbridge = var.event_notification_details.eventbridge
 
   dynamic "lambda_function" {
     for_each = var.event_notification_details.lambda_list
@@ -598,22 +606,52 @@ resource "aws_s3_bucket_notification" "bucket_notification" {
   dynamic "queue" {
     for_each = var.event_notification_details.queue_list
     content {
-      queue_arn = queue.value.queue_arn
-      events    = queue.value.events
+      queue_arn     = queue.value.queue_arn
+      events        = queue.value.events
+      filter_prefix = queue.value.filter_prefix
+      filter_suffix = queue.value.filter_suffix
     }
   }
 
   dynamic "topic" {
     for_each = var.event_notification_details.topic_list
     content {
-      topic_arn = topic.value.topic_arn
-      events    = topic.value.events
+      topic_arn     = topic.value.topic_arn
+      events        = topic.value.events
+      filter_prefix = topic.value.filter_prefix
+      filter_suffix = topic.value.filter_suffix
     }
   }
 }
 
-/// Directory Bucket 
-// https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_directory_bucket
+# Intelligent-Tiering Configuration
+# https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_intelligent_tiering_configuration
+resource "aws_s3_bucket_intelligent_tiering_configuration" "default" {
+  for_each = { for config in var.intelligent_tiering_configuration : config.name => config if local.enabled }
+
+  bucket = local.bucket_id
+  name   = each.value.name
+  status = each.value.status
+
+  dynamic "filter" {
+    for_each = each.value.filter != null ? [each.value.filter] : []
+    content {
+      prefix = filter.value.prefix
+      tags   = filter.value.tags
+    }
+  }
+
+  dynamic "tiering" {
+    for_each = each.value.tiering
+    content {
+      access_tier = tiering.value.access_tier
+      days        = tiering.value.days
+    }
+  }
+}
+
+# Directory Bucket
+# https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_directory_bucket
 resource "aws_s3_directory_bucket" "default" {
   count         = var.create_s3_directory_bucket ? 1 : 0
   bucket        = local.directory_bucket_name
@@ -622,4 +660,12 @@ resource "aws_s3_directory_bucket" "default" {
   location {
     name = var.availability_zone_id
   }
+}
+
+resource "aws_s3_bucket_request_payment_configuration" "default" {
+  count = local.enabled && var.s3_request_payment_configuration.enabled ? 1 : 0
+
+  bucket                = local.bucket_id
+  expected_bucket_owner = var.s3_request_payment_configuration.expected_bucket_owner
+  payer                 = lower(var.s3_request_payment_configuration.payer) == "requester" ? "Requester" : "BucketOwner"
 }
