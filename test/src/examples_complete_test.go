@@ -35,19 +35,22 @@ type terraformStateResourceInstance struct {
 	Attributes json.RawMessage `json:"attributes"`
 }
 
-type replicationConfigurationState struct {
-	Rule []struct {
-		ID          string `json:"id"`
-		Destination []struct {
-			EncryptionConfiguration []struct {
-				ReplicaKmsKeyID string `json:"replica_kms_key_id"`
-			} `json:"encryption_configuration"`
-		} `json:"destination"`
-	} `json:"rule"`
+type replicationRuleState struct {
+	ID          string `json:"id"`
+	Destination []struct {
+		EncryptionConfiguration []struct {
+			ReplicaKmsKeyID string `json:"replica_kms_key_id"`
+		} `json:"encryption_configuration"`
+	} `json:"destination"`
 }
 
-type iamPolicyState struct {
-	Policy string `json:"policy"`
+type iamPolicyDocument struct {
+	Statement []iamPolicyStatement `json:"Statement"`
+}
+
+type iamPolicyStatement struct {
+	Sid      string      `json:"Sid"`
+	Resource interface{} `json:"Resource"`
 }
 
 func loadTerraformState(t *testing.T, tempTestFolder string) terraformState {
@@ -82,6 +85,50 @@ func mustFindTerraformResourceAttributes(t *testing.T, state terraformState, mod
 
 	t.Fatalf("Expected Terraform state to include resource %q.%q.%q.", moduleAddress, resourceType, resourceName)
 	return nil
+}
+
+func mustFindTerraformAttribute(t *testing.T, resourceAttributes json.RawMessage, attributeName string) json.RawMessage {
+	t.Helper()
+
+	var attributes map[string]json.RawMessage
+	if err := json.Unmarshal(resourceAttributes, &attributes); err != nil {
+		t.Fatalf("Unexpected error unmarshalling Terraform resource attributes: %v.", err)
+	}
+
+	attributeValue, found := attributes[attributeName]
+	if !found {
+		t.Fatalf("Expected Terraform resource attributes to include %q.", attributeName)
+	}
+
+	return attributeValue
+}
+
+func policyStatementResources(statement iamPolicyStatement) []string {
+	switch resources := statement.Resource.(type) {
+	case string:
+		return []string{resources}
+	case []interface{}:
+		values := make([]string, 0, len(resources))
+		for _, resource := range resources {
+			resourceValue, ok := resource.(string)
+			if ok {
+				values = append(values, resourceValue)
+			}
+		}
+		return values
+	default:
+		return nil
+	}
+}
+
+func findPolicyStatementBySID(policy iamPolicyDocument, sid string) (iamPolicyStatement, bool) {
+	for _, statement := range policy.Statement {
+		if statement.Sid == sid {
+			return statement, true
+		}
+	}
+
+	return iamPolicyStatement{}, false
 }
 
 // Test the Terraform module in examples/complete using Terratest.
@@ -490,34 +537,42 @@ func TestExamplesCompleteWithKMSReplication(t *testing.T) {
 
 	state := loadTerraformState(t, tempTestFolder)
 
-	var replicationConfiguration replicationConfigurationState
+	resourceAttributes := mustFindTerraformResourceAttributes(t, state, "module.s3_bucket", "aws_s3_bucket_replication_configuration", "default")
+
+	var replicationRules []replicationRuleState
 	err := json.Unmarshal(
-		mustFindTerraformResourceAttributes(t, state, "module.s3_bucket", "aws_s3_bucket_replication_configuration", "default"),
-		&replicationConfiguration,
+		mustFindTerraformAttribute(t, resourceAttributes, "rule"),
+		&replicationRules,
 	)
 	if err != nil {
-		t.Fatalf("Unexpected error unmarshalling replication configuration state: %v.", err)
+		t.Fatalf("Unexpected error unmarshalling replication rules from Terraform state: %v.", err)
 	}
 
-	assert.Len(t, replicationConfiguration.Rule, 2)
-	for _, rule := range replicationConfiguration.Rule {
+	assert.Len(t, replicationRules, 2)
+	for _, rule := range replicationRules {
 		assert.Len(t, rule.Destination, 1)
 		assert.Len(t, rule.Destination[0].EncryptionConfiguration, 1)
 		assert.Equal(t, kmsMasterKeyArn, rule.Destination[0].EncryptionConfiguration[0].ReplicaKmsKeyID)
 	}
 
-	var replicationPolicy iamPolicyState
+	policyAttributes := mustFindTerraformResourceAttributes(t, state, "module.s3_bucket", "aws_iam_policy", "replication")
+
+	var replicationPolicy iamPolicyDocument
 	err = json.Unmarshal(
-		mustFindTerraformResourceAttributes(t, state, "module.s3_bucket", "aws_iam_policy", "replication"),
+		mustFindTerraformAttribute(t, policyAttributes, "policy"),
 		&replicationPolicy,
 	)
 	if err != nil {
 		t.Fatalf("Unexpected error unmarshalling replication IAM policy state: %v.", err)
 	}
 
-	assert.Contains(t, replicationPolicy.Policy, "\"Sid\":\"AllowPrimaryToDecryptSourceObjects\"")
-	assert.Contains(t, replicationPolicy.Policy, "\"Sid\":\"AllowPrimaryToEncryptReplicas\"")
-	assert.Contains(t, replicationPolicy.Policy, kmsMasterKeyArn)
+	sourceDecryptStatement, found := findPolicyStatementBySID(replicationPolicy, "AllowPrimaryToDecryptSourceObjects")
+	assert.True(t, found)
+	assert.Contains(t, policyStatementResources(sourceDecryptStatement), kmsMasterKeyArn)
+
+	replicaEncryptStatement, found := findPolicyStatementBySID(replicationPolicy, "AllowPrimaryToEncryptReplicas")
+	assert.True(t, found)
+	assert.Contains(t, policyStatementResources(replicaEncryptStatement), kmsMasterKeyArn)
 }
 
 func TestExamplesCompleteWithPrivilegedPrincipals(t *testing.T) {
