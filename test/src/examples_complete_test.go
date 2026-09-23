@@ -9,6 +9,7 @@ import (
 	testStructure "github.com/gruntwork-io/terratest/modules/test-structure"
 	"github.com/stretchr/testify/assert"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -17,6 +18,70 @@ import (
 func cleanup(t *testing.T, terraformOptions *terraform.Options, tempTestFolder string) {
 	terraform.Destroy(t, terraformOptions)
 	_ = os.RemoveAll(tempTestFolder)
+}
+
+type terraformState struct {
+	Resources []terraformStateResource `json:"resources"`
+}
+
+type terraformStateResource struct {
+	Module    string                           `json:"module"`
+	Type      string                           `json:"type"`
+	Name      string                           `json:"name"`
+	Instances []terraformStateResourceInstance `json:"instances"`
+}
+
+type terraformStateResourceInstance struct {
+	Attributes json.RawMessage `json:"attributes"`
+}
+
+type replicationConfigurationState struct {
+	Rule []struct {
+		ID          string `json:"id"`
+		Destination []struct {
+			EncryptionConfiguration []struct {
+				ReplicaKmsKeyID string `json:"replica_kms_key_id"`
+			} `json:"encryption_configuration"`
+		} `json:"destination"`
+	} `json:"rule"`
+}
+
+type iamPolicyState struct {
+	Policy string `json:"policy"`
+}
+
+func loadTerraformState(t *testing.T, tempTestFolder string) terraformState {
+	t.Helper()
+
+	statePath := filepath.Join(tempTestFolder, "terraform.tfstate")
+	stateBytes, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("Unexpected error reading Terraform state %q: %v.", statePath, err)
+	}
+
+	var state terraformState
+	if err := json.Unmarshal(stateBytes, &state); err != nil {
+		t.Fatalf("Unexpected error unmarshalling Terraform state %q: %v.", statePath, err)
+	}
+
+	return state
+}
+
+func mustFindTerraformResourceAttributes(t *testing.T, state terraformState, moduleAddress string, resourceType string, resourceName string) json.RawMessage {
+	t.Helper()
+
+	for _, resource := range state.Resources {
+		if resource.Module == moduleAddress && resource.Type == resourceType && resource.Name == resourceName {
+			if len(resource.Instances) == 0 {
+				t.Fatalf("Expected Terraform state resource %q.%q.%q to include an instance.", moduleAddress, resourceType, resourceName)
+			}
+
+			return resource.Instances[0].Attributes
+		}
+	}
+
+	t.Fatalf("Expected Terraform state to include resource %q.%q.%q.", moduleAddress, resourceType, resourceName)
+	return nil
 }
 
 // Test the Terraform module in examples/complete using Terratest.
@@ -387,6 +452,72 @@ func TestExamplesCompleteWithReplication(t *testing.T) {
 
 	// Verify we're getting back the outputs we expect
 	assert.NotEmptyf(t, s3ReplicationRoleArn, "If replication is enabled, we should get a Replication Role ARN.")
+}
+
+func TestExamplesCompleteWithKMSReplication(t *testing.T) {
+	t.Parallel()
+	randID := strings.ToLower(random.UniqueId())
+	attributes := []string{randID}
+
+	rootFolder := "../../"
+	terraformFolderRelativeToRoot := "examples/complete"
+	varFiles := []string{"kms-replication.us-east-2.tfvars"}
+	kmsMasterKeyArn := "arn:aws:kms:us-east-2:123456789012:key/00000000-0000-0000-0000-000000000000"
+
+	tempTestFolder := testStructure.CopyTerraformFolderToTemp(t, rootFolder, terraformFolderRelativeToRoot)
+
+	terraformOptions := &terraform.Options{
+		TerraformDir: tempTestFolder,
+		Upgrade:      true,
+		VarFiles:     varFiles,
+		Vars: map[string]interface{}{
+			"attributes": attributes,
+			"enabled":    "true",
+		},
+	}
+
+	defer cleanup(t, terraformOptions, tempTestFolder)
+
+	terraform.InitAndApply(t, terraformOptions)
+
+	s3BucketId := terraform.Output(t, terraformOptions, "bucket_id")
+	expectedS3BucketId := "eg-test-s3-replication-kms-test-" + attributes[0]
+	assert.Equal(t, expectedS3BucketId, s3BucketId)
+
+	s3ReplicationBucketId := terraform.Output(t, terraformOptions, "replication_bucket_id")
+	expectedReplicationS3BucketId := "eg-test-s3-replication-kms-test-" + attributes[0] + "-target"
+	assert.Equal(t, expectedReplicationS3BucketId, s3ReplicationBucketId)
+
+	state := loadTerraformState(t, tempTestFolder)
+
+	var replicationConfiguration replicationConfigurationState
+	err := json.Unmarshal(
+		mustFindTerraformResourceAttributes(t, state, "module.s3_bucket", "aws_s3_bucket_replication_configuration", "default"),
+		&replicationConfiguration,
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error unmarshalling replication configuration state: %v.", err)
+	}
+
+	assert.Len(t, replicationConfiguration.Rule, 2)
+	for _, rule := range replicationConfiguration.Rule {
+		assert.Len(t, rule.Destination, 1)
+		assert.Len(t, rule.Destination[0].EncryptionConfiguration, 1)
+		assert.Equal(t, kmsMasterKeyArn, rule.Destination[0].EncryptionConfiguration[0].ReplicaKmsKeyID)
+	}
+
+	var replicationPolicy iamPolicyState
+	err = json.Unmarshal(
+		mustFindTerraformResourceAttributes(t, state, "module.s3_bucket", "aws_iam_policy", "replication"),
+		&replicationPolicy,
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error unmarshalling replication IAM policy state: %v.", err)
+	}
+
+	assert.Contains(t, replicationPolicy.Policy, "\"Sid\":\"AllowPrimaryToDecryptSourceObjects\"")
+	assert.Contains(t, replicationPolicy.Policy, "\"Sid\":\"AllowPrimaryToEncryptReplicas\"")
+	assert.Contains(t, replicationPolicy.Policy, kmsMasterKeyArn)
 }
 
 func TestExamplesCompleteWithPrivilegedPrincipals(t *testing.T) {

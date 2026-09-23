@@ -69,24 +69,24 @@ data "aws_iam_policy_document" "replication" {
   }
 
   dynamic "statement" {
-    for_each = var.sse_algorithm == "aws:kms" && length(var.kms_master_key_arn) > 0 ? [1] : []
+    for_each = var.sse_algorithm == "aws:kms" ? [[var.kms_master_key_arn]] : []
 
     content {
       sid       = "AllowPrimaryToDecryptSourceObjects"
       effect    = "Allow"
       actions   = ["kms:Decrypt", "kms:DescribeKey"]
-      resources = [var.kms_master_key_arn]
+      resources = compact(statement.value)
     }
   }
 
   dynamic "statement" {
-    for_each = length(local.replica_kms_key_ids) > 0 ? [1] : []
+    for_each = length(local.replica_kms_key_ids) > 0 ? [local.replica_kms_key_ids] : []
 
     content {
       sid       = "AllowPrimaryToEncryptReplicas"
       effect    = "Allow"
       actions   = ["kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
-      resources = local.replica_kms_key_ids
+      resources = compact(statement.value)
     }
   }
 }
