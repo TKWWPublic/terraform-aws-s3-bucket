@@ -7,6 +7,11 @@ locals {
       prefix             = "/extra"
       priority           = 5
       destination_bucket = module.s3_bucket_replication_target_extra[0].bucket_arn
+      source_selection_criteria = var.sse_algorithm == "aws:kms" ? {
+        sse_kms_encrypted_objects = {
+          status = "Enabled"
+        }
+      } : null
       destination = {
         account_id = local.account_id
         encryption_configuration = var.sse_algorithm == "aws:kms" ? {
@@ -23,6 +28,11 @@ locals {
       prefix             = "/with-metrics"
       priority           = 10
       destination_bucket = null
+      source_selection_criteria = var.sse_algorithm == "aws:kms" ? {
+        sse_kms_encrypted_objects = {
+          status = "Enabled"
+        }
+      } : null
       destination = {
         account_id = local.account_id
         encryption_configuration = var.sse_algorithm == "aws:kms" ? {
