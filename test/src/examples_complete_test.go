@@ -3,12 +3,14 @@ package test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"github.com/gruntwork-io/terratest/modules/aws"
 	"github.com/gruntwork-io/terratest/modules/random"
 	"github.com/gruntwork-io/terratest/modules/terraform"
 	testStructure "github.com/gruntwork-io/terratest/modules/test-structure"
 	"github.com/stretchr/testify/assert"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -17,6 +19,110 @@ import (
 func cleanup(t *testing.T, terraformOptions *terraform.Options, tempTestFolder string) {
 	terraform.Destroy(t, terraformOptions)
 	_ = os.RemoveAll(tempTestFolder)
+}
+
+type replicationRuleState struct {
+	ID                      string                                   `json:"id"`
+	SourceSelectionCriteria *replicationSourceSelectionCriteriaState `json:"source_selection_criteria,omitempty"`
+	Destination             replicationDestinationState              `json:"destination"`
+}
+
+type replicationSourceSelectionCriteriaState struct {
+	SSEKMSEncryptedObjects *replicationStatusState `json:"sse_kms_encrypted_objects,omitempty"`
+}
+
+type replicationStatusState struct {
+	Status string `json:"status"`
+}
+
+type replicationDestinationState struct {
+	EncryptionConfiguration *replicationEncryptionConfigurationState `json:"encryption_configuration,omitempty"`
+}
+
+type replicationEncryptionConfigurationState struct {
+	ReplicaKMSKeyID string `json:"replica_kms_key_id"`
+}
+
+type serverSideEncryptionConfigurationState struct {
+	Rule []serverSideEncryptionRuleState `json:"rule"`
+}
+
+type serverSideEncryptionRuleState struct {
+	ApplyServerSideEncryptionByDefault serverSideEncryptionByDefaultState `json:"apply_server_side_encryption_by_default"`
+}
+
+type serverSideEncryptionByDefaultState struct {
+	KMSMasterKeyID string `json:"kms_master_key_id"`
+}
+
+type stringOrSlice []string
+
+func (s *stringOrSlice) UnmarshalJSON(data []byte) error {
+	var single string
+	if err := json.Unmarshal(data, &single); err == nil {
+		*s = []string{single}
+		return nil
+	}
+
+	var multiple []string
+	if err := json.Unmarshal(data, &multiple); err == nil {
+		*s = multiple
+		return nil
+	}
+
+	return fmt.Errorf("expected string or []string, got %s", string(data))
+}
+
+type iamPolicyDocumentState struct {
+	Statement []iamPolicyStatementState `json:"Statement"`
+}
+
+type iamPolicyStatementState struct {
+	Sid      string        `json:"Sid"`
+	Action   stringOrSlice `json:"Action"`
+	Resource stringOrSlice `json:"Resource"`
+}
+
+func mustFindPolicyStatement(t *testing.T, document iamPolicyDocumentState, sid string) iamPolicyStatementState {
+	t.Helper()
+
+	for _, statement := range document.Statement {
+		if statement.Sid == sid {
+			return statement
+		}
+	}
+
+	t.Fatalf("Expected IAM policy document to include statement %q.", sid)
+	return iamPolicyStatementState{}
+}
+
+func mustFindPlannedResourceAttributes(t *testing.T, plan *terraform.PlanStruct, address string) map[string]interface{} {
+	t.Helper()
+
+	resource, found := plan.ResourcePlannedValuesMap[address]
+	if !found {
+		t.Fatalf("Expected Terraform plan to include resource %q.", address)
+	}
+
+	return resource.AttributeValues
+}
+
+func mustDecodePlannedAttribute(t *testing.T, attributes map[string]interface{}, attributeName string, target interface{}) {
+	t.Helper()
+
+	attributeValue, found := attributes[attributeName]
+	if !found {
+		t.Fatalf("Expected planned resource attributes to include %q.", attributeName)
+	}
+
+	attributeBytes, err := json.Marshal(attributeValue)
+	if err != nil {
+		t.Fatalf("Unexpected error marshalling planned attribute %q: %v.", attributeName, err)
+	}
+
+	if err := json.Unmarshal(attributeBytes, target); err != nil {
+		t.Fatalf("Unexpected error unmarshalling planned attribute %q: %v.", attributeName, err)
+	}
 }
 
 // Test the Terraform module in examples/complete using Terratest.
@@ -387,6 +493,99 @@ func TestExamplesCompleteWithReplication(t *testing.T) {
 
 	// Verify we're getting back the outputs we expect
 	assert.NotEmptyf(t, s3ReplicationRoleArn, "If replication is enabled, we should get a Replication Role ARN.")
+}
+
+func TestExamplesCompleteWithKMSReplication(t *testing.T) {
+	t.Parallel()
+	randID := strings.ToLower(random.UniqueId())
+	attributes := []string{randID}
+
+	rootFolder := "../../"
+	terraformFolderRelativeToRoot := "examples/complete"
+	varFiles := []string{"kms-replication.us-east-2.tfvars"}
+
+	tempTestFolder := testStructure.CopyTerraformFolderToTemp(t, rootFolder, terraformFolderRelativeToRoot)
+	defer os.RemoveAll(tempTestFolder)
+
+	terraformOptions := &terraform.Options{
+		TerraformDir: tempTestFolder,
+		Upgrade:      true,
+		VarFiles:     varFiles,
+		PlanFilePath: filepath.Join(tempTestFolder, "kms-replication.tfplan"),
+		Vars: map[string]interface{}{
+			"attributes": attributes,
+			"enabled":    "true",
+		},
+	}
+
+	// The fixture creates its KMS key in the same configuration, so the key ARN is unknown while
+	// planning. Planning is therefore the assertion: it fails outright if the replication policy
+	// derives any block count from that unknown ARN. Nothing is applied, so no key is ever created.
+	plan := terraform.InitAndPlanAndShowWithStruct(t, terraformOptions)
+
+	replicationPolicyAttributes := mustFindPlannedResourceAttributes(t, plan, "module.s3_bucket.aws_iam_policy.replication[0]")
+
+	var replicationPolicyJSON string
+	mustDecodePlannedAttribute(t, replicationPolicyAttributes, "policy", &replicationPolicyJSON)
+
+	var replicationPolicy iamPolicyDocumentState
+	err := json.Unmarshal([]byte(replicationPolicyJSON), &replicationPolicy)
+	if err != nil {
+		t.Fatalf("Unexpected error unmarshalling planned replication policy JSON: %v.", err)
+	}
+
+	decryptSourceObjectsStatement := mustFindPolicyStatement(t, replicationPolicy, "AllowPrimaryToDecryptSourceObjects")
+	assert.ElementsMatch(t, []string{"kms:Decrypt", "kms:DescribeKey"}, []string(decryptSourceObjectsStatement.Action))
+
+	encryptReplicasStatement := mustFindPolicyStatement(t, replicationPolicy, "AllowPrimaryToEncryptReplicas")
+	assert.ElementsMatch(t, []string{"kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"}, []string(encryptReplicasStatement.Action))
+
+	replicationAttributes := mustFindPlannedResourceAttributes(t, plan, "module.s3_bucket.aws_s3_bucket_replication_configuration.default[0]")
+
+	var replicationRules []replicationRuleState
+	mustDecodePlannedAttribute(t, replicationAttributes, "rule", &replicationRules)
+
+	assert.Len(t, replicationRules, 2)
+	replicationRuleIDs := make([]string, 0, len(replicationRules))
+	for _, rule := range replicationRules {
+		replicationRuleIDs = append(replicationRuleIDs, rule.ID)
+	}
+
+	assert.Contains(t, replicationRuleIDs, "replication-test-explicit-bucket")
+	assert.Contains(t, replicationRuleIDs, "replication-test-metrics")
+
+	expectedReplicaKMSResources := make([]string, 0, len(replicationRules))
+	seenReplicaKMSResources := map[string]struct{}{}
+
+	for _, rule := range replicationRules {
+		if assert.NotNil(t, rule.SourceSelectionCriteria) {
+			if assert.NotNil(t, rule.SourceSelectionCriteria.SSEKMSEncryptedObjects) {
+				assert.Equal(t, "Enabled", rule.SourceSelectionCriteria.SSEKMSEncryptedObjects.Status)
+			}
+		}
+
+		if rule.Destination.EncryptionConfiguration != nil {
+			replicaKMSKeyID := rule.Destination.EncryptionConfiguration.ReplicaKMSKeyID
+			if _, seen := seenReplicaKMSResources[replicaKMSKeyID]; !seen {
+				seenReplicaKMSResources[replicaKMSKeyID] = struct{}{}
+				expectedReplicaKMSResources = append(expectedReplicaKMSResources, replicaKMSKeyID)
+			}
+		}
+	}
+
+	assert.ElementsMatch(t, expectedReplicaKMSResources, []string(encryptReplicasStatement.Resource))
+
+	sourceEncryptionAttributes := mustFindPlannedResourceAttributes(t, plan, "module.s3_bucket.aws_s3_bucket_server_side_encryption_configuration.default[0]")
+
+	var sourceEncryptionConfiguration serverSideEncryptionConfigurationState
+	mustDecodePlannedAttribute(t, sourceEncryptionAttributes, "rule", &sourceEncryptionConfiguration.Rule)
+	if assert.Len(t, sourceEncryptionConfiguration.Rule, 1) {
+		assert.Equal(
+			t,
+			[]string{sourceEncryptionConfiguration.Rule[0].ApplyServerSideEncryptionByDefault.KMSMasterKeyID},
+			[]string(decryptSourceObjectsStatement.Resource),
+		)
+	}
 }
 
 func TestExamplesCompleteWithPrivilegedPrincipals(t *testing.T) {

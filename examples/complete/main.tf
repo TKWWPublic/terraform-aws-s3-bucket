@@ -6,6 +6,20 @@ provider "awsutils" {
   region = var.region
 }
 
+# Creating the key here (instead of passing a literal ARN) keeps its ARN unknown at plan time,
+# which is what exercises the replication policy's plan-time behaviour.
+resource "aws_kms_key" "test" {
+  count = var.create_kms_key ? 1 : 0
+
+  description             = "Test key for ${module.this.id}"
+  deletion_window_in_days = 7
+  tags                    = module.this.tags
+}
+
+locals {
+  kms_master_key_arn = var.create_kms_key ? one(aws_kms_key.test[*].arn) : var.kms_master_key_arn
+}
+
 module "s3_bucket" {
   source = "../../"
 
@@ -29,7 +43,7 @@ module "s3_bucket" {
   bucket_key_enabled            = var.bucket_key_enabled
   source_policy_documents       = var.source_policy_documents
   sse_algorithm                 = var.sse_algorithm
-  kms_master_key_arn            = var.kms_master_key_arn
+  kms_master_key_arn            = local.kms_master_key_arn
   block_public_acls             = var.block_public_acls
   block_public_policy           = var.block_public_policy
   ignore_public_acls            = var.ignore_public_acls
