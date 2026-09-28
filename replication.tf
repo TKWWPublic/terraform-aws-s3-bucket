@@ -64,7 +64,30 @@ data "aws_iam_policy_document" "replication" {
     resources = toset(concat(
       try(length(var.s3_replica_bucket_arn), 0) > 0 ? ["${var.s3_replica_bucket_arn}/*"] : [],
       [for rule in local.s3_replication_rules : "${rule.destination_bucket}/*" if try(length(rule.destination_bucket), 0) > 0],
+      [for rule in local.s3_replication_rules : "${rule.destination.bucket}/*" if try(length(rule.destination.bucket), 0) > 0],
     ))
+  }
+
+  dynamic "statement" {
+    for_each = length(local.source_kms_replication_rules) > 0 ? [var.kms_master_key_arn] : []
+
+    content {
+      sid       = "AllowPrimaryToDecryptSourceObjects"
+      effect    = "Allow"
+      actions   = ["kms:Decrypt", "kms:DescribeKey"]
+      resources = [statement.value]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = length(local.replica_kms_key_rules) > 0 ? [1] : []
+
+    content {
+      sid       = "AllowPrimaryToEncryptReplicas"
+      effect    = "Allow"
+      actions   = ["kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
+      resources = tolist(toset(local.replica_kms_key_ids))
+    }
   }
 }
 
