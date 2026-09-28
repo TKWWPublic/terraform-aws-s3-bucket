@@ -8,6 +8,22 @@ locals {
   versioning_enabled            = local.enabled && var.versioning_enabled
   transfer_acceleration_enabled = local.enabled && var.transfer_acceleration_enabled
 
+  # Only the nested `encryption_configuration` form is considered: its presence is known at plan time
+  # even when the key ARN is not, and it is the only form the `destination` block turns into replica encryption.
+  replica_kms_key_rules = local.replication_enabled ? [
+    for rule in(local.s3_replication_rules == null ? [] : local.s3_replication_rules) : rule
+    if try(rule.destination.encryption_configuration, null) != null
+  ] : []
+
+  replica_kms_key_ids = [
+    for rule in local.replica_kms_key_rules : rule.destination.encryption_configuration.replica_kms_key_id
+  ]
+
+  source_kms_replication_rules = local.replication_enabled ? [
+    for rule in(local.s3_replication_rules == null ? [] : local.s3_replication_rules) : rule
+    if try(rule.source_selection_criteria.sse_kms_encrypted_objects.status, "Disabled") == "Enabled"
+  ] : []
+
   # Remember, everything has to work with enabled == false,
   # so we cannot use coalesce() because it errors if all its arguments are empty,
   # and we cannot use one() because it returns null, which does not work in templates and lists.
@@ -326,6 +342,18 @@ resource "aws_s3_bucket_replication_configuration" "default" {
     # versioning must be set before replication
     aws_s3_bucket_versioning.default
   ]
+
+  lifecycle {
+    precondition {
+      condition     = !local.replication_enabled || local.versioning_enabled
+      error_message = "`versioning_enabled` must be `true` when `s3_replication_enabled` is `true`."
+    }
+
+    precondition {
+      condition     = !local.replication_enabled || var.sse_algorithm != "aws:kms" || var.kms_master_key_arn != ""
+      error_message = "`kms_master_key_arn` must be set to a customer managed key when replication uses `sse_algorithm = \"aws:kms\"`: S3 cannot replicate objects encrypted with the AWS managed `aws/s3` key."
+    }
+  }
 }
 
 resource "aws_s3_bucket_object_lock_configuration" "default" {
